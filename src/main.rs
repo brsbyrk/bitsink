@@ -2,18 +2,17 @@ mod bitsink;
 
 use anyhow::Result;
 use axum::extract::Path;
-use bitsink::cli::Cli;
-use clap::Parser;
 use url::Url;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize the logger
     tracing_subscriber::fmt::init();
-    // Parse the CLI arguments and execute the corresponding commands
-    // let cli = Cli::parse();
-    // cli.run();
+    test().await?;
+    Ok(())
+}
 
+async fn test() -> Result<()> {
     let mut sink = bitsink::BitSink::new();
     let mut project_1 =
         bitsink::project::Project::new("Project 1".to_string(), "Description 1".to_string())?;
@@ -25,8 +24,8 @@ async fn main() -> Result<()> {
         }),
     );
     project_1.allow_origin(Url::parse("http://google.com")?);
-    
-    sink.add_project(project_1);
+
+    sink.add_project(project_1).await?;
 
     let mut project_2 =
         bitsink::project::Project::new("Project 2".to_string(), "Description 2".to_string())?;
@@ -35,7 +34,7 @@ async fn main() -> Result<()> {
         "/p2_test",
         axum::routing::get(|| async { "Project 2 test" }),
     );
-    sink.add_project(project_2);
+    sink.add_project(project_2).await?;
 
     sink.start().await?;
     Ok(())

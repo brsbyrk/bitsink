@@ -5,11 +5,11 @@ use axum::http::method::Method;
 use axum::http::{Request, Response, StatusCode};
 use axum::middleware::Next;
 use axum::routing::MethodRouter;
-use axum::{Json, Router};
+use axum::Router;
 use base64::Engine;
 use ring::digest;
 use tower::util::BoxLayer;
-use tower::ServiceBuilder;
+use tower::{ServiceBuilder, ServiceExt};
 use tower_http::cors::{Any, CorsLayer};
 use url::Url;
 use uuid::Uuid;
@@ -50,9 +50,10 @@ impl Project {
             allowed_origins: Vec::new(),
             allowed_methods: Vec::new(),
             allowed_headers: Vec::new(),
-            router: Self::static_router(),
+            router: Router::new(),
             token: JwtAuth::new(Self::generate_secret_key(id)).generate_token(&id_as_string)?,
         };
+        p.add_default_routes();
         println!("token: {}", p.token);
         Ok(p)
     }
@@ -89,21 +90,6 @@ impl Project {
         self.router = self.router.clone().route(path, handler);
     }
 
-    // Returns the [`Router`] with CORS for this [`Project`].
-    pub fn router(&self) -> Router {
-        let p = self.clone();
-        let router =
-            self.router
-                .clone()
-                .layer(self.cors())
-                .clone()
-                .route_layer(axum::middleware::from_fn(move |req, next| {
-                    let project = p.clone();
-                    Self::auth_middleware(req, next, project)
-                }));
-        router
-    }
-
     pub fn allow_all_origins(&mut self) {
         self.allowed_origins.clear();
     }
@@ -130,6 +116,56 @@ impl Project {
     // TODO: This is temporary solution. We need to check claims.
     pub fn validate_token(&self, token: &str) -> bool {
         Self::validate_project_token(self.id, token)
+    }
+
+    // New method to add default routes
+    fn add_default_routes(&mut self) {
+        let hello_message = format!("Hello! this is project {}", self.name);
+        self.add_route(
+            "/",
+            axum::routing::any(move || async move { hello_message }),
+        );
+        self.add_route("/ping", axum::routing::any(|| async { "pong" }));
+        self.add_route("/health", axum::routing::any(|| async { "OK" }));
+    }
+
+    pub async fn handle_request(&self, req: Request<Body>) -> Response<Body> {
+        // Handle authentication
+        if !self.validate_auth(&req) {
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        // Apply CORS
+        let cors = self.cors();
+        let response = self
+            .router
+            .clone()
+            .layer(cors)
+            .oneshot(req)
+            .await
+            .unwrap_or_else(|_| {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::empty())
+                    .unwrap()
+            });
+
+        response
+    }
+
+    fn validate_auth(&self, req: &Request<Body>) -> bool {
+        if let Some(auth_header) = req.headers().get("Authorization") {
+            if let Ok(auth_str) = auth_header.to_str() {
+                let parts: Vec<&str> = auth_str.split_whitespace().collect();
+                if parts.len() == 2 && parts[0] == "Bearer" {
+                    return self.validate_token(parts[1]);
+                }
+            }
+        }
+        false
     }
 }
 
@@ -179,7 +215,11 @@ impl Project {
     fn uuid_to_short_id(uuid: Uuid) -> String {
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(uuid.as_bytes());
         // strip '==', "-", "_" characters
-        encoded.replace("=", "").replace("-", "").replace("_", "").to_lowercase()
+        encoded
+            .replace("=", "")
+            .replace("-", "")
+            .replace("_", "")
+            .to_lowercase()
     }
 
     // TODO: This is a temporary solution. We need to generate a secure token.
@@ -214,15 +254,6 @@ impl Project {
         Err(StatusCode::UNAUTHORIZED)
     }
 
-    fn static_router() -> Router {
-        let hello_message = format!("Hello! this is inside project");
-        let static_router = Router::new()
-            .route("/", axum::routing::any(|| async { hello_message }))
-            .route("/ping", axum::routing::any(|| async { "pong" }))
-            .route("/health", axum::routing::any(|| async { "OK" }));
-        static_router
-    }
-
     fn validate_project_token(project_id: Uuid, token: &str) -> bool {
         let jwt_auth = auth::jwt::JwtAuth::new(Self::generate_secret_key(project_id));
         jwt_auth.validate_token(token).is_ok()
@@ -237,4 +268,17 @@ impl Project {
             .map(|b| format!("{:02x}", b))
             .collect::<String>()
     }
+
+    // fn generate_salt_from_cpu_and_disk() -> String {
+    //     let mut sys = sysinfo::System::new_all();
+    //     sys.refresh_all();
+
+    //     let cpu = sys.global_processor_info().brand().to_string();
+    //     let disk = sys.disks()
+    //         .first()
+    //         .map(|d| d.name().to_string_lossy().to_string())
+    //         .unwrap_or_default();
+
+    //     format!("{}-{}", cpu, disk)
+    // }
 }

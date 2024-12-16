@@ -41,6 +41,7 @@ base64 = "0.22"
 directories = "5"
 dialoguer = "0.11"
 console = "0.15"
+sysinfo = "0.32"
 
 [profile.dev]
 incremental = true # Compile your binary in smaller steps.
